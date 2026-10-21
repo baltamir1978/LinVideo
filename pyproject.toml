@@ -1,0 +1,17 @@
+# No se instala con pip: el paquete va en un .deb (ver Tools/build-deb.sh).
+# Este fichero sólo configura las herramientas de desarrollo.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.13"     # el de Debian 13
+packages = ["linvideo"]
+strict = true
+warn_unused_ignores = true
+
+# PyGObject no trae tipos; en el Mac ni siquiera está instalado.
+[[tool.mypy.overrides]]
+module = ["gi", "gi.*"]
+ignore_missing_imports = true
