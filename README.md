@@ -49,7 +49,7 @@ Ctrl-C cancela; lo descargado se conserva y la siguiente vez se reanuda.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install pytest mypy
-.venv/bin/pytest          # 90 pruebas
+.venv/bin/pytest          # 100 pruebas
 .venv/bin/mypy            # tipos estrictos, para Python 3.13
 .venv/bin/python -m linvideo --help
 ```

@@ -319,12 +319,20 @@ def _quote(text: str) -> str:
     return urllib.parse.quote(text, safe="")
 
 
-def fetch_text(url: str, headers: dict[str, str] | None = None) -> str:
+def fetch_text(url: str, headers: dict[str, str] | None = None,
+               allow_not_found: bool = False) -> str:
+    """`allow_not_found`: un 404 devuelve la página en vez de fallar (Pornhub y YouPorn lo
+    usan para decir que no hay resultados)."""
     request = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
         **(headers or {})})
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-        raw: bytes = response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            raw: bytes = response.read()
+    except urllib.error.HTTPError as error:
+        if not (allow_not_found and error.code == 404):
+            raise
+        raw = error.read()
     return raw.decode("utf-8", errors="replace")
 
 
@@ -610,11 +618,11 @@ class XVideosSite(Enum):
 
 
 def _xvideos_style(site: XVideosSite) -> Callable[[str, int, int], list[SearchResult]]:
+    source = SearchSource.XVIDEOS if site is XVideosSite.XVIDEOS else SearchSource.XNXX
+
     def finder(query: str, limit: int, page: int) -> list[SearchResult]:
-        results = parse_xvideos_style(fetch_text(site.paged_url(query, page)), site, limit)
-        if not results:
-            raise SearchError(f"{site.display_name} no devolvió resultados legibles")
-        return results
+        page_html = fetch_text(site.paged_url(query, page))
+        return checked(parse_xvideos_style(page_html, site, limit), page_html, source)
     return finder
 
 
@@ -662,11 +670,10 @@ def parse_xvideos_style(page: str, site: XVideosSite, limit: int) -> list[Search
 
 
 def _pornhub(query: str, limit: int, page: int) -> list[SearchResult]:
-    results = parse_pornhub(fetch_text(
-        f"https://www.pornhub.com/video/search?search={_quote(query)}&page={page}"), limit)
-    if not results:
-        raise SearchError("Pornhub no devolvió resultados legibles")
-    return results
+    # Una búsqueda sin resultados responde 404, con la página de «no hay nada» dentro.
+    page_html = fetch_text(f"https://www.pornhub.com/video/search?search={_quote(query)}"
+                           f"&page={page}", allow_not_found=True)
+    return checked(parse_pornhub(page_html, limit), page_html, SearchSource.PORNHUB)
 
 
 def parse_pornhub(page: str, limit: int) -> list[SearchResult]:
@@ -724,11 +731,10 @@ def parse_xhamster(page: str, limit: int) -> list[SearchResult]:
 
 
 def _youporn(query: str, limit: int, page: int) -> list[SearchResult]:
-    results = parse_youporn(fetch_text(
-        f"https://www.youporn.com/search/?query={_quote(query)}&page={page}"), limit)
-    if not results:
-        raise SearchError("YouPorn no devolvió resultados legibles")
-    return results
+    # Como Pornhub: sin resultados, 404 con la página de «no hay nada».
+    page_html = fetch_text(f"https://www.youporn.com/search/?query={_quote(query)}&page={page}",
+                           allow_not_found=True)
+    return checked(parse_youporn(page_html, limit), page_html, SearchSource.YOUPORN)
 
 
 def parse_youporn(page: str, limit: int) -> list[SearchResult]:
@@ -840,11 +846,44 @@ def _html_search(source: SearchSource) -> Callable[[str, int, int], list[SearchR
             case _:
                 url = "https://thisvid.com/search/" + (f"{page}/" if page > 1 else "") + f"?q={plus}"
                 parser = parse_thisvid
-        results = parser(fetch_text(url), limit)
-        if not results:
-            raise SearchError(f"{source.title} no devolvió resultados legibles")
-        return results
+        page_html = fetch_text(url)
+        return checked(parser(page_html, limit), page_html, source)
     return finder
+
+
+# --- Páginas sin resultados --------------------------------------------------------
+
+_NO_RESULTS: dict[SearchSource, list[str]] = {
+    SearchSource.XVIDEOS: [r"No v(?:í|i|&iacute;)deos encontrados", r"No videos? (?:found|match)"],
+    SearchSource.XNXX: [r"No v(?:í|i|&iacute;)deos encontrados", r"No videos? (?:found|match)"],
+    SearchSource.TNAFLIX: [r">\s*No results\s*<"],
+    SearchSource.YOUJIZZ: [r"no videos found matching", r"search - 0 results"],
+    SearchSource.THISVID: [r"No results found"],
+    # Con el idioma en español, Pornhub redirige a es.pornhub.com y lo dice en español.
+    SearchSource.PORNHUB: [r"No Search Results", r"No results found",
+                           r"No se han encontrado resultados"],
+    SearchSource.YOUPORN: [r"couldn(?:'|&#039;)t find what you were looking for"],
+}
+
+
+def says_no_results(page: str, source: SearchSource) -> bool:
+    """Cómo dice cada web que su búsqueda no ha encontrado nada. PornTrex no da ninguna
+    señal clara, así que con ella una lista vacía sigue contando como fallo. Comprobado
+    contra las páginas reales (21-oct-2026) que ninguna con resultados contiene estas frases."""
+    return any(re.search(p, page, re.I) for p in _NO_RESULTS.get(source, []))
+
+
+def checked(results: list[SearchResult], page: str, source: SearchSource) -> list[SearchResult]:
+    """Si la web dice que no ha encontrado nada, la lista va vacía aunque se haya leído algo:
+    ThisVid pone vídeos «en tendencia» debajo del aviso, y se colaban como resultados. Sólo
+    una lectura vacía sin ese aviso cuenta como error. En AppVideo, una búsqueda legítima sin
+    resultados («jazz piano» en TNAFlix o YouJizz) se presentaba como si la web hubiera
+    cambiado su página."""
+    if says_no_results(page, source):
+        return []
+    if not results:
+        raise SearchError(f"{source.title} no devolvió resultados legibles")
+    return results
 
 
 def parse_tnaflix(page: str, limit: int) -> list[SearchResult]:

@@ -7,7 +7,8 @@ mismos de AppVideo).
 
 import pytest
 
-from linvideo.search import (SearchError, XVideosSite, extract_balanced_json, parse_porntrex,
+from linvideo.search import (SearchError, SearchSource, XVideosSite, checked,
+                             extract_balanced_json, parse_porntrex, says_no_results,
                              parse_pornhub, parse_reddit, parse_thisvid, parse_tnaflix,
                              parse_xhamster, parse_xvideos_style, parse_youjizz, parse_youporn,
                              parse_ytdlp_entries, slugify)
@@ -311,3 +312,42 @@ def test_resultados_de_ytdlp() -> None:
     assert results[1].page_url == "https://soundcloud.com/x"
     # La página 2 descarta las anteriores.
     assert [r.id for r in parse_ytdlp_entries(root, skip=1)] == ["b"]
+
+
+# --- Búsquedas sin resultados -------------------------------------------------------
+
+
+@pytest.mark.parametrize(("source", "page"), [
+    # Fragmentos reales de las páginas de «no hay nada» (octubre de 2026).
+    (SearchSource.XVIDEOS, '<div id="content"> <h3>No v&iacute;deos encontrados con esta '
+                           "b&uacute;squeda.</h3>"),
+    (SearchSource.XNXX, "<h3>No vídeos encontrados con esta búsqueda.</h3>"),
+    (SearchSource.TNAFLIX, '<div class="no-results">\n  No results\n</div>'),
+    (SearchSource.YOUJIZZ, "'jazz piano' search - 0 results &nbsp;"),
+    (SearchSource.THISVID, "<p>No results found. We couldn't find any videos</p>"),
+    (SearchSource.PORNHUB, "<title>No results found - Pornhub.com</title>"),
+    (SearchSource.PORNHUB, "<title>No se han encontrado resultados - Pornhub.com</title>"),
+    (SearchSource.YOUPORN, "Sorry!! We couldn&#039;t find what you were looking for."),
+])
+def test_paginas_sin_resultados(source: SearchSource, page: str) -> None:
+    assert says_no_results(page, source)
+    assert checked([], page, source) == []
+
+
+def test_pagina_desconocida_es_fallo() -> None:
+    assert not says_no_results("<html>otra maquetación</html>", SearchSource.XVIDEOS)
+    # PornTrex no avisa de ninguna forma clara.
+    assert not says_no_results("No results found", SearchSource.PORNTREX)
+    with pytest.raises(SearchError):
+        checked([], "<html>otra cosa</html>", SearchSource.TNAFLIX)
+
+
+def test_tendencias_de_thisvid_no_son_resultados() -> None:
+    page = """
+    <p>No results found. We couldn't find any videos matching your search.</p>
+    <h2>Trending Videos</h2>
+    <a href="https://thisvid.com/videos/tendencia/" title="Tendencia" class="tumbpu">
+      <span class="thumb "><span class="duration">2:20</span></span></a>
+    """
+    assert len(parse_thisvid(page, 24)) == 1
+    assert checked(parse_thisvid(page, 24), page, SearchSource.THISVID) == []
